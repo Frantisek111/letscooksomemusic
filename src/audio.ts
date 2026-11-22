@@ -88,6 +88,19 @@ function drum(index: number): Clip {
 const drums = Array.from({ length: 4 }, (_, index) => drum(index))
 const buffers = new WeakMap<BaseAudioContext, WeakMap<Clip, AudioBuffer>>()
 
+function smoothClipEdges(samples: Float32Array, rate: number) {
+  // Leave most of even a very short cut at its original level.
+  const limit = Math.floor(samples.length / 4)
+  const attack = Math.min(limit, Math.round(rate * 0.002))
+  const release = Math.min(limit, Math.round(rate * 0.005))
+  for (let frame = 0; frame < attack; frame++) {
+    samples[frame] *= frame / attack
+  }
+  for (let frame = 0; frame < release; frame++) {
+    samples[samples.length - 1 - frame] *= frame / release
+  }
+}
+
 export function playClip(context: BaseAudioContext, clip: Clip, time: number, volume = 1) {
   let cache = buffers.get(context)
   if (!cache) {
@@ -96,8 +109,14 @@ export function playClip(context: BaseAudioContext, clip: Clip, time: number, vo
   }
   let buffer = cache.get(clip)
   if (!buffer) {
-    buffer = context.createBuffer(clip.channels.length, clip.channels[0].length, clip.rate)
-    clip.channels.forEach((channel, index) => buffer!.getChannelData(index).set(channel))
+    const decoded = context.createBuffer(clip.channels.length, clip.channels[0].length, clip.rate)
+    const isStockDrum = drums.includes(clip)
+    clip.channels.forEach((channel, index) => {
+      const samples = decoded.getChannelData(index)
+      samples.set(channel)
+      if (!isStockDrum) smoothClipEdges(samples, clip.rate)
+    })
+    buffer = decoded
     cache.set(clip, buffer)
   }
   const source = context.createBufferSource()

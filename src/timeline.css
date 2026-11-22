@@ -1,0 +1,26 @@
+.arrangement .number-field { min-height: 39px; }
+.arrangement select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: .8125rem;
+}
+.arrangement select option { background: var(--surface); }
+.timeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 6px;
+}
+.timeline-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  min-height: 58px;
+  background: var(--surface);
+}
+.timeline-bar span { color: var(--quiet); font: .6875rem var(--mono); }
+.timeline-bar[aria-pressed="true"] { border-color: var(--mint); }
+.timeline-bar[aria-pressed="true"] strong { color: var(--mint); }
+.timeline-bar.playing { box-shadow: inset 0 -3px var(--mint); }

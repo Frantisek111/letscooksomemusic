@@ -1,3 +1,5 @@
+import type { Mix } from './mixer.ts'
+
 export interface Clip {
   rate: number
   channels: Float32Array[]
@@ -31,6 +33,7 @@ export interface Session {
   slices: Slice[]
   selected: number
   bars?: Note[][]
+  mix?: Mix
 }
 
 const database = new Promise<IDBDatabase>((resolve, reject) => {

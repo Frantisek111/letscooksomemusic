@@ -14,3 +14,5 @@ Record up to 16 seconds or import audio. Select a suggested slice, adjust its ha
 Use the **Piano roll** to add synthesized piano, guitar, and bass. Pick an instrument, octave, and note length, then click notes into the grid. Add notes on the same step to form chords. Use the arrow keys to navigate the grid and Enter to toggle a note.
 
 Set **Song length** to up to eight bars and use **Edit bar** to arrange different melodies over the repeating drum pattern. **Export WAV** renders the whole arrangement. The arrangement, drums, and samples are saved in the browser's IndexedDB.
+
+Use **Load starter** to explore an example song. The confirmation explains which parts of the current song it replaces. In the **Mixer**, set level, stereo pan, and mute for all seven drum and instrument channels. These settings apply to playback and WAV export.

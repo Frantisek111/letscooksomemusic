@@ -1,5 +1,8 @@
-import { detectSlices, duration, exportWav, fromBuffer, playClip, playStep, songSteps, stepLength, trim } from './audio.ts'
+import { applyMix, detectSlices, drumChannels, duration, exportWav, fromBuffer, playClip, playStep, songSteps, stepLength, trim } from './audio.ts'
 import { instrumentClip, instruments } from './instruments.ts'
+import { mountMixer } from './mixer.ts'
+import type { Mix } from './mixer.ts'
+import { presets } from './presets.ts'
 import { load, save } from './storage.ts'
 import type { Clip, Instrument, Session, Slice } from './storage.ts'
 
@@ -64,6 +67,7 @@ studio.innerHTML = `
       <div class="controls">
         <label class="number-field">Song length <select id="song-length">${Array.from({length:8}, (_, index) => `<option value="${index + 1}">${index + 1} ${index === 0 ? 'bar' : 'bars'}</option>`).join('')}</select></label>
         <label class="number-field">Edit bar <select id="edit-bar"><option value="0">1</option></select></label>
+        <button id="starter-open" type="button">Load starter</button>
       </div>
     </div>
     <div class="controls roll-controls">
@@ -75,6 +79,10 @@ studio.innerHTML = `
     </div>
     <div class="grid-scroll"><div class="grid piano-roll" id="piano-roll" role="group" aria-label="Piano roll notes"></div></div>
   </section>
+  <section class="panel mixer-panel" aria-labelledby="mixer-title">
+    <div class="panel-head"><h2 id="mixer-title">Mixer</h2></div>
+    <div id="mixer"></div>
+  </section>
   <div class="footer"><span id="status" role="status">Loading session…</span><span>Audio stays on this device</span></div>
   <dialog id="assign-dialog" aria-labelledby="assign-title">
     <form method="dialog">
@@ -82,6 +90,14 @@ studio.innerHTML = `
       <label>Track <select id="assign-track">${names.map((name, index) => `<option value="${index}">${name}</option>`).join('')}</select></label>
       <label>Destination <select id="assign-step"><option value="-1">Track sound</option>${Array.from({length:16}, (_, index) => `<option value="${index}">Step ${index + 1}</option>`).join('')}</select></label>
       <div class="controls"><button value="cancel">Cancel</button><button id="destination-confirm" class="primary" value="assign">Assign</button></div>
+    </form>
+  </dialog>
+  <dialog id="starter-dialog" aria-labelledby="starter-title">
+    <form method="dialog">
+      <h2 id="starter-title">Load a starter song</h2>
+      <label>Starter <select id="starter-select"></select></label>
+      <p>Loading replaces the drum steps, notes, and tempo. Your samples and mixer settings are kept.</p>
+      <div class="controls"><button value="cancel">Cancel</button><button value="load" class="primary">Load song</button></div>
     </form>
   </dialog>
   <div id="drag-ghost" class="drag-ghost" hidden></div>
@@ -491,6 +507,8 @@ studio.addEventListener('click', event => {
   } else if (button.dataset.mute !== undefined) {
     const track = session.tracks[Number(button.dataset.mute)]
     track.muted = !track.muted
+    if (context) applyMix(context, session)
+    refreshMixer()
     updateGrid()
     persistSession()
   }
@@ -762,6 +780,7 @@ async function togglePlayback() {
   try {
     const audio = await audioContext()
     if (current !== generation) return
+    applyMix(audio, session)
     nextStep = 0
     nextTime = audio.currentTime + .04
     schedule(audio)
@@ -779,6 +798,52 @@ async function togglePlayback() {
 }
 get('play').onclick = togglePlayback
 get('roll-play').onclick = togglePlayback
+
+function readMix(): Mix {
+  const mix = { ...session.mix }
+  drumChannels.forEach((channel, index) => {
+    const settings = mix[channel]
+    mix[channel] = { level: settings?.level ?? 1, pan: settings?.pan ?? 0, muted: session.tracks[index].muted }
+  })
+  return mix
+}
+
+const refreshMixer = mountMixer(get('mixer'), readMix, mix => {
+  if (loading) return
+  session.mix = mix
+  drumChannels.forEach((channel, index) => {
+    session.tracks[index].muted = mix[channel]?.muted ?? false
+  })
+  if (context) applyMix(context, session)
+  updateGrid()
+  persistSession()
+})
+
+const starterDialog = get<HTMLDialogElement>('starter-dialog')
+const starterSelect = get<HTMLSelectElement>('starter-select')
+presets.forEach((preset, index) => starterSelect.add(new Option(preset.name, String(index))))
+get('starter-open').onclick = () => {
+  if (loading) return
+  starterDialog.returnValue = ''
+  starterDialog.showModal()
+}
+starterDialog.addEventListener('close', () => {
+  if (starterDialog.returnValue !== 'load') return
+  const preset = presets[Number(starterSelect.value)]
+  if (!preset) return
+  stopPlayback()
+  session.bpm = preset.bpm
+  session.tracks.forEach((track, index) => {
+    track.steps = Array.from({ length: 16 }, (_, step) => preset.drums[index].includes(step))
+  })
+  session.bars = preset.bars.map(bar => bar.map(note => ({ ...note })))
+  editBar.value = '0'
+  bpmInput.value = String(session.bpm)
+  updateGrid()
+  updateSongLength()
+  paintRoll()
+  persistSession()
+})
 
 bpmInput.onchange = () => {
   if (loading) return
@@ -825,5 +890,6 @@ load().then(saved => {
   updateEditor()
   updateSongLength()
   paintRoll()
+  refreshMixer()
   status(saved ? 'Session restored' : 'Ready')
 }).catch(() => status('Local storage unavailable')).finally(() => { loading = false })

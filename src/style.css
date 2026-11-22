@@ -254,7 +254,8 @@ dialog form { display: grid; gap: 16px; }
 dialog label { display: grid; gap: 5px; font-size: .875rem; }
 dialog select { padding: 8px; background: #252b37; color: inherit; border: 1px solid var(--edge); border-radius: 7px; }
 dialog .controls { justify-content: end; }
-.melody { margin-top: 14px; }
+.melody, .mixer-panel { margin-top: 14px; }
+#starter-dialog p { color: var(--quiet); font-size: .875rem; max-width: 36ch; }
 .roll-controls { margin-bottom: 12px; }
 .melody .number-field { min-height: 39px; }
 .melody select {

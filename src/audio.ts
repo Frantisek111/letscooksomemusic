@@ -31,12 +31,21 @@ export function detectSlices(clip: Clip): Slice[] {
   const points = [0]
   const end = duration(clip)
   let baseline = levels[0]
+  const preRoll = Math.round(clip.rate * 0.002)
   for (let index = 1; index < levels.length && points.length < 16; index++) {
-    const time = (index - 1) * window / clip.rate
     const level = levels[index]
-    if (time - points.at(-1)! >= 0.09 && end - time >= 0.045 &&
-        level > Math.max(0.006, peak * 0.07, baseline * 2.4) &&
-        level - levels[index - 1] > peak * 0.045) points.push(time)
+    const previous = levels[index - 1]
+    if (level > Math.max(0.006, peak * 0.07, baseline * 2.4) && level - previous > peak * 0.045) {
+      const threshold = Math.max(0.006, previous * 2, level * 0.4)
+      const start = (index - 1) * window
+      const stop = Math.min(frames, (index + 1) * window)
+      for (let frame = start; frame < stop; frame++) {
+        if (!clip.channels.some(channel => Math.abs(channel[frame]) >= threshold)) continue
+        const time = Math.max(0, frame - preRoll) / clip.rate
+        if (time - points.at(-1)! >= 0.09 && end - time >= 0.045) points.push(time)
+        break
+      }
+    }
     baseline += (level - baseline) * 0.13
   }
   return points.map((start, index) => ({ start, end: points[index + 1] ?? end }))
@@ -54,14 +63,24 @@ function drum(index: number): Clip {
     const noise = seed / 2147483648 - 1
     const high = noise - previous
     previous = noise
-    phase += 2 * Math.PI * (48 + 108 * Math.exp(-time * 48)) / rate
-    const voices = [
-      0.82 * Math.sin(phase) * Math.exp(-time * 15),
-      (0.34 * noise + 0.46 * Math.sin(time * 2 * Math.PI * 176) * Math.exp(-time * 33)) * Math.exp(-time * 21),
-      0.29 * high * Math.exp(-time * 49),
-      (0.55 * Math.sin(2 * Math.PI * 390 * time + 1.4 * Math.sin(2 * Math.PI * 210 * time)) + 0.12 * noise) * Math.exp(-time * 26),
-    ]
-    data[frame] = voices[index] * Math.min(1, frame / 35, (data.length - frame) / 100)
+    let voice = 0
+    switch (index) {
+      case 0:
+        phase += 2 * Math.PI * (46 + 125 * Math.exp(-time * 52)) / rate
+        voice = 0.82 * Math.sin(phase) * Math.exp(-time * 15) + 0.09 * high * Math.exp(-time * 250)
+        break
+      case 1:
+        voice = 0.32 * (0.65 * noise + 0.35 * high) * Math.exp(-time * 24)
+          + 0.42 * Math.sin(time * 2 * Math.PI * 176) * Math.exp(-time * 56)
+        break
+      case 2:
+        voice = (0.26 * high + 0.05 * Math.sin(time * 2 * Math.PI * 8173)) * Math.exp(-time * 62)
+        break
+      case 3:
+        voice = (0.55 * Math.sin(2 * Math.PI * 390 * time + 1.4 * Math.sin(2 * Math.PI * 210 * time)) + 0.12 * noise) * Math.exp(-time * 26)
+        break
+    }
+    data[frame] = voice * Math.min(1, frame / 35, (data.length - frame) / 100)
   }
   return { rate, channels: [data] }
 }
@@ -128,9 +147,15 @@ export async function exportWav(session: Session): Promise<Blob> {
   view.setUint32(40, length * 4, true)
   const left = audio.getChannelData(0)
   const right = audio.getChannelData(1)
+  let peak = 1
   for (let frame = 0; frame < length; frame++) {
-    view.setInt16(44 + frame * 4, Math.round(Math.max(-1, Math.min(1, left[frame])) * 32767), true)
-    view.setInt16(46 + frame * 4, Math.round(Math.max(-1, Math.min(1, right[frame])) * 32767), true)
+    peak = Math.max(peak, Math.abs(left[frame]), Math.abs(right[frame]))
+  }
+  // Apply one gain to the whole mix so overload protection preserves the stereo balance.
+  const pcm = (sample: number) => Math.round(sample / peak * (sample < 0 ? 32768 : 32767))
+  for (let frame = 0; frame < length; frame++) {
+    view.setInt16(44 + frame * 4, pcm(left[frame]), true)
+    view.setInt16(46 + frame * 4, pcm(right[frame]), true)
   }
   return new Blob([bytes], { type: 'audio/wav' })
 }

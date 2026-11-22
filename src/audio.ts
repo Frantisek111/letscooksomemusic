@@ -1,6 +1,7 @@
 import type { Clip, Session, Slice } from './storage.ts'
 import { instrumentClip } from './instruments.ts'
 import type { Channel } from './mixer.ts'
+import { createEffects } from './effects.ts'
 
 export const duration = (clip: Clip) => clip.channels[0].length / clip.rate
 
@@ -137,6 +138,16 @@ export function playClip(context: BaseAudioContext, clip: Clip, time: number, vo
 export const drumChannels = ['kick', 'snare', 'hat', 'percussion'] as const satisfies readonly Channel[]
 const channels = [...drumChannels, 'piano', 'guitar', 'bass'] as const
 const buses = new WeakMap<BaseAudioContext, Map<Channel, { gain: GainNode; pan: StereoPannerNode }>>()
+const masters = new WeakMap<BaseAudioContext, ReturnType<typeof createEffects>>()
+
+function masterBus(context: BaseAudioContext) {
+  let bus = masters.get(context)
+  if (!bus) {
+    bus = createEffects(context)
+    masters.set(context, bus)
+  }
+  return bus
+}
 
 function channelBus(context: BaseAudioContext, channel: Channel) {
   let map = buses.get(context)
@@ -149,13 +160,14 @@ function channelBus(context: BaseAudioContext, channel: Channel) {
     bus = { gain: context.createGain(), pan: context.createStereoPanner() }
     bus.gain.channelCount = 2
     bus.gain.channelCountMode = 'explicit'
-    bus.gain.connect(bus.pan).connect(context.destination)
+    bus.gain.connect(bus.pan).connect(masterBus(context).input)
     map.set(channel, bus)
   }
   return bus
 }
 
 export function applyMix(context: BaseAudioContext, session: Session) {
+  masterBus(context).update(session.effects ?? { room: 0, compression: 0 })
   channels.forEach((channel, index) => {
     const { gain, pan } = channelBus(context, channel)
     const settings = session.mix?.[channel]
@@ -173,15 +185,20 @@ export function applyMix(context: BaseAudioContext, session: Session) {
 }
 
 export function playStep(context: BaseAudioContext, session: Session, step: number, time: number) {
-  const sources = session.tracks.flatMap((track, index) => track.steps[step % 16] && !track.muted
+  const bar = Math.floor(step / 16)
+  const sources = session.tracks.flatMap((track, index) => drumSteps(session, bar, index)[step % 16] && !track.muted
     ? [playClip(context, track.sample ?? drums[index], time, 0.24, channelBus(context, drumChannels[index]).gain)]
     : [])
-  for (const note of session.bars?.[Math.floor(step / 16)] ?? []) {
+  for (const note of session.bars?.[bar] ?? []) {
     if (note.step !== step % 16) continue
     const clip = instrumentClip(note.instrument, note.pitch, note.length * stepLength(session.bpm))
     sources.push(playClip(context, clip, time, .28, channelBus(context, note.instrument).gain))
   }
   return sources
+}
+
+export function drumSteps(session: Session, bar: number, track: number): boolean[] {
+  return session.drumBars?.[bar]?.[track] ?? session.tracks[track].steps
 }
 
 export const stepLength = (bpm: number) => 60 / bpm / 4

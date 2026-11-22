@@ -255,6 +255,16 @@ dialog label { display: grid; gap: 5px; font-size: .875rem; }
 dialog select { padding: 8px; background: #252b37; color: inherit; border: 1px solid var(--edge); border-radius: 7px; }
 dialog .controls { justify-content: end; }
 .melody, .mixer-panel { margin-top: 14px; }
+.master-effects {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 8px 12px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+}
+.master-effects legend { font-size: .875rem; font-weight: 650; }
 #starter-dialog p { color: var(--quiet); font-size: .875rem; max-width: 36ch; }
 .roll-controls { margin-bottom: 12px; }
 .melody .number-field { min-height: 39px; }
@@ -311,13 +321,14 @@ dialog .controls { justify-content: end; }
 }
 @media (max-width: 580px) {
   #studio { padding: 0 12px 19px; }
-  .top { min-height: 68px; gap: 8px; }
+  .top { min-height: 68px; gap: 8px; flex-wrap: wrap; padding-block: 12px; }
   .brand { gap: 7px; }
   .mark { width: 32px; height: 32px; }
   .panel { padding: 13px; }
   .panel-head { align-items: stretch; flex-direction: column; }
   .panel-head .controls { gap: 6px; }
   .sequencer .panel-head .controls { display: grid; grid-template-columns: auto 1fr auto; }
+  .sequencer .panel-head .controls:has(#use-loop:not([hidden])) { grid-template-columns: auto 1fr; }
   .sequencer .panel-head button { padding-inline: 8px; }
   .tempo input { width: 2rem; }
   .sequencer .play { min-width: 65px; }

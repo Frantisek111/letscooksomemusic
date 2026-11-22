@@ -1,4 +1,5 @@
 import type { Mix } from './mixer.ts'
+import type { Effects } from './effects.ts'
 
 export interface Clip {
   rate: number
@@ -33,7 +34,9 @@ export interface Session {
   slices: Slice[]
   selected: number
   bars?: Note[][]
+  drumBars?: (boolean[][] | null)[]
   mix?: Mix
+  effects?: Effects
 }
 
 const database = new Promise<IDBDatabase>((resolve, reject) => {

@@ -1,8 +1,10 @@
-import { applyMix, detectSlices, drumChannels, duration, exportWav, fromBuffer, playClip, playStep, songSteps, stepLength, trim } from './audio.ts'
+import { applyMix, detectSlices, drumChannels, drumSteps, duration, exportWav, fromBuffer, playClip, playStep, songSteps, stepLength, trim } from './audio.ts'
 import { instrumentClip, instruments } from './instruments.ts'
 import { mountMixer } from './mixer.ts'
 import type { Mix } from './mixer.ts'
 import { presets } from './presets.ts'
+import { mountTimeline } from './timeline.ts'
+import { exportMidi } from './midi.ts'
 import { load, save } from './storage.ts'
 import type { Clip, Instrument, Session, Slice } from './storage.ts'
 
@@ -18,7 +20,10 @@ const studio = document.querySelector<HTMLElement>('#studio')!
 studio.innerHTML = `
   <header class="top">
     <div class="brand"><span class="mark" aria-hidden="true">▂▅▃▇</span><h1>Lets cook a music</h1></div>
-    <button id="export" class="primary" type="button">Export WAV</button>
+    <div class="controls export-controls">
+      <button id="export-midi" type="button">Export MIDI</button>
+      <button id="export" class="primary" type="button">Export WAV</button>
+    </div>
   </header>
   <section class="panel editor" aria-labelledby="editor-title">
     <div class="panel-head">
@@ -50,12 +55,23 @@ studio.innerHTML = `
       </div>
     </div>
   </section>
+  <section class="panel arrangement" aria-labelledby="arrangement-title">
+    <div class="panel-head">
+      <div><h2 id="arrangement-title">Arrangement</h2><p>Select a bar to edit its drums and notes</p></div>
+      <div class="controls">
+        <label class="number-field">Song length <select id="song-length">${Array.from({length:8}, (_, index) => `<option value="${index + 1}">${index + 1} ${index === 0 ? 'bar' : 'bars'}</option>`).join('')}</select></label>
+        <button id="starter-open" type="button">Load starter</button>
+      </div>
+    </div>
+    <div class="timeline" id="timeline" role="group" aria-label="Arrangement bars"></div>
+  </section>
   <section class="panel sequencer" aria-labelledby="seq-title">
     <div class="panel-head">
-      <div><h2 id="seq-title">Step sequencer</h2><p>4 tracks · 16 steps</p></div>
+      <div><h2 id="seq-title">Step sequencer</h2><p id="drum-editing">Bar 1 · Drum loop</p></div>
       <div class="controls">
         <label class="number-field tempo"><input id="bpm" aria-label="Tempo in BPM" type="number" min="30" max="300" step="1" value="120"><span>BPM</span></label>
         <button id="clear" type="button">Clear Steps</button>
+        <button id="use-loop" type="button" hidden>Use drum loop</button>
         <button id="play" class="play" type="button" aria-pressed="false">▶ Play</button>
       </div>
     </div>
@@ -63,11 +79,9 @@ studio.innerHTML = `
   </section>
   <section class="panel melody" aria-labelledby="melody-title">
     <div class="panel-head">
-      <div><h2 id="melody-title">Piano roll</h2><p>Place notes and chords over the drum loop</p></div>
+      <div><h2 id="melody-title">Piano roll</h2><p>Place notes and chords in the selected bar</p></div>
       <div class="controls">
-        <label class="number-field">Song length <select id="song-length">${Array.from({length:8}, (_, index) => `<option value="${index + 1}">${index + 1} ${index === 0 ? 'bar' : 'bars'}</option>`).join('')}</select></label>
         <label class="number-field">Edit bar <select id="edit-bar"><option value="0">1</option></select></label>
-        <button id="starter-open" type="button">Load starter</button>
       </div>
     </div>
     <div class="controls roll-controls">
@@ -82,6 +96,17 @@ studio.innerHTML = `
   <section class="panel mixer-panel" aria-labelledby="mixer-title">
     <div class="panel-head"><h2 id="mixer-title">Mixer</h2></div>
     <div id="mixer"></div>
+    <fieldset class="master-effects">
+      <legend>Master effects</legend>
+      <label class="mixer-control">
+        <span>Room reverb</span><span class="mixer-value" id="room-value" aria-hidden="true">0%</span>
+        <input id="room" type="range" min="0" max="1" step=".01" value="0" aria-label="Room reverb">
+      </label>
+      <label class="mixer-control">
+        <span>Compression</span><span class="mixer-value" id="compression-value" aria-hidden="true">0%</span>
+        <input id="compression" type="range" min="0" max="1" step=".01" value="0" aria-label="Compression">
+      </label>
+    </fieldset>
   </section>
   <div class="footer"><span id="status" role="status">Loading session…</span><span>Audio stays on this device</span></div>
   <dialog id="assign-dialog" aria-labelledby="assign-title">
@@ -152,11 +177,13 @@ function status(message: string) {
 }
 
 function persistSession() {
+  paintTimeline()
   const version = ++statusVersion
   // Snapshot mutable controls immediately. PCM arrays are immutable after creation.
   const snapshot = {
     ...session,
     bars: session.bars?.map(bar => [...bar]),
+    drumBars: session.drumBars?.map(bar => bar?.map(steps => [...steps]) ?? null),
     slices: session.slices.map(slice => ({ ...slice })),
     tracks: session.tracks.map(track => ({ ...track, steps: [...track.steps] })),
   }
@@ -168,9 +195,14 @@ function persistSession() {
 }
 
 function updateGrid() {
+  const bar = Number(editBar.value)
+  const custom = !!session.drumBars?.[bar]
+  get('drum-editing').textContent = `Bar ${bar + 1} · ${custom ? 'Custom drums' : 'Drum loop'}`
+  get('use-loop').hidden = !custom
   for (const button of stepButtons) {
-    const track = session.tracks[Number(button.dataset.track)]
-    const active = track.steps[Number(button.dataset.step)]
+    const index = Number(button.dataset.track)
+    const track = session.tracks[index]
+    const active = drumSteps(session, bar, index)[Number(button.dataset.step)]
     button.classList.toggle('active', active)
     button.classList.toggle('muted', track.muted)
     button.setAttribute('aria-pressed', String(active))
@@ -181,6 +213,17 @@ function updateGrid() {
     mute.title = `${session.tracks[index].muted ? 'Unmute' : 'Mute'} ${name}`
     trackLabels[index].querySelector('small')!.textContent = session.tracks[index].sample ? 'Sample' : 'Built-in'
   })
+}
+
+function editableDrums(): boolean[][] {
+  const bar = Number(editBar.value)
+  if (bar === 0) return session.tracks.map(track => track.steps)
+  const patterns = session.drumBars ??= Array.from({ length: songSteps(session) / 16 }, () => null)
+  if (!patterns[bar]) {
+    patterns[bar] = session.tracks.map(track => [...track.steps])
+    updateSongLength()
+  }
+  return patterns[bar]
 }
 
 function selectedSlice(): Slice | undefined {
@@ -394,7 +437,7 @@ function assignSlice(index: number, track: number, step: number) {
   const slice = session.slices[index]
   if (!clip || !slice) return
   session.tracks[track].sample = trim(clip, slice)
-  if (step >= 0) session.tracks[track].steps[step] = true
+  if (step >= 0) editableDrums()[track][step] = true
   updateGrid()
   persistSession()
 }
@@ -416,8 +459,9 @@ function openDestination(hit?: Hit) {
 }
 
 function moveHit(from: Hit, to: Hit) {
-  const source = session.tracks[from.track].steps
-  const target = session.tracks[to.track].steps
+  const bar = Number(editBar.value)
+  const source = drumSteps(session, bar, from.track)
+  const target = drumSteps(session, bar, to.track)
   const step = to.step < 0 ? from.step : to.step
   if (source === target && from.step === step) return
   if (!source[from.step]) return
@@ -425,8 +469,9 @@ function moveHit(from: Hit, to: Hit) {
     status('That step already has a hit')
     return
   }
-  source[from.step] = false
-  target[step] = true
+  const pattern = editableDrums()
+  pattern[from.track][from.step] = false
+  pattern[to.track][step] = true
   updateGrid()
   persistSession()
 }
@@ -499,9 +544,9 @@ studio.addEventListener('click', event => {
   if (button.dataset.slice !== undefined) {
     selectSlice(Number(button.dataset.slice))
   } else if (button.classList.contains('step')) {
-    const track = session.tracks[Number(button.dataset.track)]
+    const steps = editableDrums()[Number(button.dataset.track)]
     const step = Number(button.dataset.step)
-    track.steps[step] = !track.steps[step]
+    steps[step] = !steps[step]
     updateGrid()
     persistSession()
   } else if (button.dataset.mute !== undefined) {
@@ -540,7 +585,7 @@ studio.addEventListener('pointerdown', event => {
     if ('slice' in item) return true
     const track = Number(target.dataset.track)
     const step = Number(target.dataset.step) < 0 ? item.step : Number(target.dataset.step)
-    return !session.tracks[track].steps[step]
+    return !drumSteps(session, Number(editBar.value), track)[step]
   }
   const updateHover = () => {
     hover?.classList.remove('drop-hover')
@@ -610,11 +655,28 @@ let visibleStep = -1
 const queue: Array<{ when: number; step: number }> = []
 const sources = new Set<AudioBufferSourceNode>()
 
+const renderTimeline = mountTimeline(get('timeline'), bar => {
+  if (loading) return
+  editBar.value = String(bar)
+  selectBar()
+})
+
+function paintTimeline() {
+  renderTimeline({
+    selected: Number(editBar.value),
+    playing: Math.floor(visibleStep / 16),
+    bars: Array.from({ length: songSteps(session) / 16 }, (_, bar) => ({
+      drums: session.tracks.reduce((hits, _, index) => hits + drumSteps(session, bar, index).filter(Boolean).length, 0),
+      notes: session.bars?.[bar]?.length ?? 0,
+    })),
+  })
+}
+
 function updateSongLength() {
   const bars = session.bars
   const count = bars?.length || 1
   const selected = Math.min(Number(editBar.value), count - 1)
-  const lastPopulated = bars?.findLastIndex(notes => notes.length > 0) ?? -1
+  const lastPopulated = bars?.findLastIndex((notes, index) => notes.length > 0 || !!session.drumBars?.[index]) ?? -1
   songLength.value = String(count)
   for (const option of songLength.options) option.disabled = Number(option.value) <= lastPopulated
   if (editBar.options.length !== count) {
@@ -673,14 +735,22 @@ songLength.onchange = () => {
   if (loading) return
   const count = Number(songLength.value)
   const bars = session.bars ??= [[]]
-  if (bars.slice(count).some(bar => bar.length)) return updateSongLength()
+  if (bars.slice(count).some(bar => bar.length) || session.drumBars?.slice(count).some(Boolean)) return updateSongLength()
   stopPlayback()
   session.bars = Array.from({ length: count }, (_, index) => bars[index] ?? [])
+  if (session.drumBars) session.drumBars = Array.from({ length: count }, (_, index) => session.drumBars?.[index] ?? null)
   updateSongLength()
+  updateGrid()
   paintRoll()
   persistSession()
 }
-editBar.onchange = paintRoll
+function selectBar() {
+  updateGrid()
+  paintRoll()
+  paintDrumPlayhead()
+  paintTimeline()
+}
+editBar.onchange = selectBar
 instrumentInput.onchange = paintRoll
 octaveInput.onchange = renderRoll
 
@@ -731,10 +801,17 @@ pianoRoll.onkeydown = event => {
 
 function highlight(step: number) {
   if (step === visibleStep) return
+  const changedBar = Math.floor(visibleStep / 16) !== Math.floor(step / 16)
   visibleStep = step
-  columns.forEach((column, index) => column.classList.toggle('current', index === step % 16))
-  stepButtons.forEach((button, index) => button.classList.toggle('current', index % 16 === step % 16))
+  paintDrumPlayhead()
   paintRollPlayhead()
+  if (changedBar) paintTimeline()
+}
+
+function paintDrumPlayhead() {
+  const step = Math.floor(visibleStep / 16) === Number(editBar.value) ? visibleStep % 16 : -1
+  columns.forEach((column, index) => column.classList.toggle('current', index === step))
+  stepButtons.forEach((button, index) => button.classList.toggle('current', index % 16 === step))
 }
 
 function schedule(audio: AudioContext) {
@@ -819,6 +896,30 @@ const refreshMixer = mountMixer(get('mixer'), readMix, mix => {
   persistSession()
 })
 
+const effectKeys = ['room', 'compression'] as const
+
+function refreshEffects() {
+  for (const key of effectKeys) {
+    const input = get<HTMLInputElement>(key)
+    const amount = session.effects?.[key] ?? 0
+    const label = `${Math.round(amount * 100)}%`
+    input.value = String(amount)
+    input.setAttribute('aria-valuetext', label)
+    get(`${key}-value`).textContent = label
+  }
+}
+
+for (const key of effectKeys) {
+  const input = get<HTMLInputElement>(key)
+  input.oninput = () => {
+    if (loading) return
+    session.effects = { ...(session.effects ?? { room: 0, compression: 0 }), [key]: input.valueAsNumber }
+    refreshEffects()
+    if (context) applyMix(context, session)
+    persistSession()
+  }
+}
+
 const starterDialog = get<HTMLDialogElement>('starter-dialog')
 const starterSelect = get<HTMLSelectElement>('starter-select')
 presets.forEach((preset, index) => starterSelect.add(new Option(preset.name, String(index))))
@@ -837,6 +938,7 @@ starterDialog.addEventListener('close', () => {
     track.steps = Array.from({ length: 16 }, (_, step) => preset.drums[index].includes(step))
   })
   session.bars = preset.bars.map(bar => bar.map(note => ({ ...note })))
+  session.drumBars = undefined
   editBar.value = '0'
   bpmInput.value = String(session.bpm)
   updateGrid()
@@ -854,9 +956,37 @@ bpmInput.onchange = () => {
 
 get('clear').onclick = () => {
   if (loading) return
-  session.tracks.forEach(track => track.steps.fill(false))
+  editableDrums().forEach(steps => steps.fill(false))
   updateGrid()
+  updateSongLength()
   persistSession()
+}
+
+get('use-loop').onclick = () => {
+  if (loading || !session.drumBars) return
+  session.drumBars[Number(editBar.value)] = null
+  updateGrid()
+  updateSongLength()
+  persistSession()
+}
+
+function downloadFile(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+get('export-midi').onclick = () => {
+  if (loading) return
+  try {
+    downloadFile(exportMidi(session), `lets-cook-a-music-${session.bpm}bpm.mid`)
+    status('MIDI exported')
+  } catch {
+    status('Could not export MIDI')
+  }
 }
 
 get('export').onclick = async () => {
@@ -865,12 +995,7 @@ get('export').onclick = async () => {
   button.disabled = true
   try {
     const bpm = session.bpm
-    const url = URL.createObjectURL(await exportWav(session))
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `lets-cook-a-music-${bpm}bpm.wav`
-    link.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    downloadFile(await exportWav(session), `lets-cook-a-music-${bpm}bpm.wav`)
     status('WAV exported')
   } catch {
     status('Could not export WAV')
@@ -882,6 +1007,7 @@ get('export').onclick = async () => {
 updateGrid()
 updateEditor()
 renderRoll()
+paintTimeline()
 load().then(saved => {
   if (saved) session = saved
   if (session.recording) calculatePeaks(session.recording)
@@ -890,6 +1016,8 @@ load().then(saved => {
   updateEditor()
   updateSongLength()
   paintRoll()
+  paintTimeline()
   refreshMixer()
+  refreshEffects()
   status(saved ? 'Session restored' : 'Ready')
 }).catch(() => status('Local storage unavailable')).finally(() => { loading = false })

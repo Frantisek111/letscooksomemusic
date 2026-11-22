@@ -254,6 +254,48 @@ dialog form { display: grid; gap: 16px; }
 dialog label { display: grid; gap: 5px; font-size: .875rem; }
 dialog select { padding: 8px; background: #252b37; color: inherit; border: 1px solid var(--edge); border-radius: 7px; }
 dialog .controls { justify-content: end; }
+.melody { margin-top: 14px; }
+.roll-controls { margin-bottom: 12px; }
+.melody .number-field { min-height: 39px; }
+.melody select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: .8125rem;
+}
+.melody select option { background: var(--surface); }
+#playing-bar { margin-inline-start: auto; color: var(--mint); font: .75rem var(--mono); }
+.piano-roll { --track-width: 58px; --step-width: 34px; --grid-gap: 3px; }
+.piano-roll .grid-corner, .pitch-key {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+}
+.piano-roll .grid-corner { background: var(--surface); }
+.pitch-key {
+  display: grid;
+  align-items: center;
+  padding-inline: 9px;
+  border-radius: 4px;
+  background: #d8e0e5;
+  color: #202632;
+  font: .75rem var(--mono);
+}
+.pitch-key.accidental { background: #303949; color: #f2f1ee; }
+.note-cell {
+  min-height: 27px;
+  padding: 0;
+  border-radius: 4px;
+  background: #222a37;
+  font: .75rem var(--mono);
+}
+.note-cell.downbeat { background: #2e394a; }
+.note-cell.held { background: #294a3d; }
+.note-cell[aria-pressed="true"], .note-cell[aria-pressed="true"]:hover { background: var(--mint); color: #16281e; }
+.note-cell.current { box-shadow: inset 0 -2px var(--mint); }
+.note-cell.current[aria-pressed="true"] { box-shadow: inset 0 -2px #16281e; }
+.note-cell:focus-visible { outline: 2px solid currentColor; outline-offset: -4px; }
+.step-number.beat[data-roll-column]:not([data-roll-column="0"]) { margin-inline-start: 3px; }
 @media (max-width: 880px) {
   .slice-toolbar { flex-wrap: wrap; }
   .slice-controls { flex-shrink: 1; }
@@ -287,4 +329,7 @@ dialog .controls { justify-content: end; }
   .number-field { padding-inline: 6px; }
   .ruler { padding-inline: 6px; font-size: .6875rem; }
   .footer { flex-wrap: wrap; }
+  .piano-roll { --track-width: 48px; --step-width: 40px; }
+  .note-cell { min-height: 36px; }
+  #playing-bar { margin-inline-start: 0; }
 }

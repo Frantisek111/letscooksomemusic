@@ -1,4 +1,5 @@
 import type { Clip, Session, Slice } from './storage.ts'
+import { instrumentClip } from './instruments.ts'
 
 export const duration = (clip: Clip) => clip.channels[0].length / clip.rate
 
@@ -133,18 +134,26 @@ export function playClip(context: BaseAudioContext, clip: Clip, time: number, vo
 }
 
 export function playStep(context: BaseAudioContext, session: Session, step: number, time: number) {
-  return session.tracks.flatMap((track, index) => track.steps[step] && !track.muted
+  const sources = session.tracks.flatMap((track, index) => track.steps[step % 16] && !track.muted
     ? [playClip(context, track.sample ?? drums[index], time, 0.24)]
     : [])
+  for (const note of session.bars?.[Math.floor(step / 16)] ?? []) {
+    if (note.step !== step % 16) continue
+    const clip = instrumentClip(note.instrument, note.pitch, note.length * stepLength(session.bpm))
+    sources.push(playClip(context, clip, time, .28))
+  }
+  return sources
 }
 
 export const stepLength = (bpm: number) => 60 / bpm / 4
+export const songSteps = (session: Session) => (session.bars?.length || 1) * 16
 
 export async function exportWav(session: Session): Promise<Blob> {
   const rate = 44100
-  const length = Math.round(rate * stepLength(session.bpm) * 16)
+  const steps = songSteps(session)
+  const length = Math.round(rate * stepLength(session.bpm) * steps)
   const context = new OfflineAudioContext(2, length, rate)
-  for (let step = 0; step < 16; step++) playStep(context, session, step, step * stepLength(session.bpm))
+  for (let step = 0; step < steps; step++) playStep(context, session, step, step * stepLength(session.bpm))
   const audio = await context.startRendering()
   const bytes = new ArrayBuffer(44 + length * 4)
   const view = new DataView(bytes)

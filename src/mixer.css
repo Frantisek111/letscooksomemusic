@@ -1,0 +1,61 @@
+.mixer-channels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5rem), 1fr));
+  gap: 8px;
+}
+
+.mixer-channel {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 4px 12px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+}
+
+.mixer-channel legend {
+  padding-inline: 4px;
+  font-size: .875rem;
+  font-weight: 650;
+}
+
+.mixer-control {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  padding-top: 4px;
+  font-size: .75rem;
+  color: var(--quiet);
+}
+
+.mixer-value {
+  color: inherit;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.mixer-control input {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  accent-color: var(--quiet);
+  cursor: pointer;
+}
+
+.mixer-mute {
+  width: 100%;
+  min-height: 36px;
+  margin-top: 4px;
+  font-size: .75rem;
+}
+
+.mixer-mute[aria-pressed="true"] {
+  color: var(--mint);
+  border-color: var(--mint);
+}
+
+.mixer-control input:focus-visible,
+.mixer-mute:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+}

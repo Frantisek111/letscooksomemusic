@@ -1,6 +1,10 @@
-import { detectSlices, duration, exportWav, fromBuffer, playClip, playStep, stepLength, trim } from './audio.ts'
+import { applyMix, detectSlices, drumChannels, duration, exportWav, fromBuffer, playClip, playStep, songSteps, stepLength, trim } from './audio.ts'
+import { instrumentClip, instruments } from './instruments.ts'
+import { mountMixer } from './mixer.ts'
+import type { Mix } from './mixer.ts'
+import { presets } from './presets.ts'
 import { load, save } from './storage.ts'
-import type { Clip, Session, Slice } from './storage.ts'
+import type { Clip, Instrument, Session, Slice } from './storage.ts'
 
 const names = ['Kick', 'Snare', 'Hi-hat', 'Percussion']
 const colors = ['#ff976d', '#f8ca76', '#95dfbf', '#bba8fa']
@@ -57,6 +61,28 @@ studio.innerHTML = `
     </div>
     <div class="grid-scroll"><div class="grid" id="grid"></div></div>
   </section>
+  <section class="panel melody" aria-labelledby="melody-title">
+    <div class="panel-head">
+      <div><h2 id="melody-title">Piano roll</h2><p>Place notes and chords over the drum loop</p></div>
+      <div class="controls">
+        <label class="number-field">Song length <select id="song-length">${Array.from({length:8}, (_, index) => `<option value="${index + 1}">${index + 1} ${index === 0 ? 'bar' : 'bars'}</option>`).join('')}</select></label>
+        <label class="number-field">Edit bar <select id="edit-bar"><option value="0">1</option></select></label>
+        <button id="starter-open" type="button">Load starter</button>
+      </div>
+    </div>
+    <div class="controls roll-controls">
+      <label class="number-field">Instrument <select id="instrument">${Object.entries(instruments).map(([value, name]) => `<option value="${value}">${name}</option>`).join('')}</select></label>
+      <label class="number-field">Octave <select id="octave">${[2, 3, 4, 5, 6].map(octave => `<option${octave === 4 ? ' selected' : ''}>${octave}</option>`).join('')}</select></label>
+      <label class="number-field">Note length <select id="note-length"><option value="1">1 step</option><option value="2">2 steps</option><option value="4">4 steps</option><option value="8">8 steps</option></select></label>
+      <button id="roll-play" class="play" type="button" aria-pressed="false">▶ Play</button>
+      <span id="playing-bar" hidden></span>
+    </div>
+    <div class="grid-scroll"><div class="grid piano-roll" id="piano-roll" role="group" aria-label="Piano roll notes"></div></div>
+  </section>
+  <section class="panel mixer-panel" aria-labelledby="mixer-title">
+    <div class="panel-head"><h2 id="mixer-title">Mixer</h2></div>
+    <div id="mixer"></div>
+  </section>
   <div class="footer"><span id="status" role="status">Loading session…</span><span>Audio stays on this device</span></div>
   <dialog id="assign-dialog" aria-labelledby="assign-title">
     <form method="dialog">
@@ -64,6 +90,14 @@ studio.innerHTML = `
       <label>Track <select id="assign-track">${names.map((name, index) => `<option value="${index}">${name}</option>`).join('')}</select></label>
       <label>Destination <select id="assign-step"><option value="-1">Track sound</option>${Array.from({length:16}, (_, index) => `<option value="${index}">Step ${index + 1}</option>`).join('')}</select></label>
       <div class="controls"><button value="cancel">Cancel</button><button id="destination-confirm" class="primary" value="assign">Assign</button></div>
+    </form>
+  </dialog>
+  <dialog id="starter-dialog" aria-labelledby="starter-title">
+    <form method="dialog">
+      <h2 id="starter-title">Load a starter song</h2>
+      <label>Starter <select id="starter-select"></select></label>
+      <p>Loading replaces the drum steps, notes, and tempo. Your samples and mixer settings are kept.</p>
+      <div class="controls"><button value="cancel">Cancel</button><button value="load" class="primary">Load song</button></div>
     </form>
   </dialog>
   <div id="drag-ghost" class="drag-ghost" hidden></div>
@@ -82,6 +116,13 @@ const sliceList = get<HTMLDivElement>('slices')
 const dialog = get<HTMLDialogElement>('assign-dialog')
 const overlay = get<HTMLDivElement>('trim-overlay')
 const ghost = get<HTMLDivElement>('drag-ghost')
+const pianoRoll = get<HTMLDivElement>('piano-roll')
+const songLength = get<HTMLSelectElement>('song-length')
+const editBar = get<HTMLSelectElement>('edit-bar')
+const instrumentInput = get<HTMLSelectElement>('instrument')
+const octaveInput = get<HTMLSelectElement>('octave')
+const noteLength = get<HTMLSelectElement>('note-length')
+const pitches = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B']
 
 grid.innerHTML = `<div class="grid-corner">Track</div>${Array.from({length:16}, (_, index) => `<div class="step-number ${index % 4 === 0 ? 'beat' : ''}" data-column="${index}">${String(index + 1).padStart(2, '0')}</div>`).join('')}
 ${names.map((name, track) => `
@@ -115,6 +156,7 @@ function persistSession() {
   // Snapshot mutable controls immediately. PCM arrays are immutable after creation.
   const snapshot = {
     ...session,
+    bars: session.bars?.map(bar => [...bar]),
     slices: session.slices.map(slice => ({ ...slice })),
     tracks: session.tracks.map(track => ({ ...track, steps: [...track.steps] })),
   }
@@ -465,6 +507,8 @@ studio.addEventListener('click', event => {
   } else if (button.dataset.mute !== undefined) {
     const track = session.tracks[Number(button.dataset.mute)]
     track.muted = !track.muted
+    if (context) applyMix(context, session)
+    refreshMixer()
     updateGrid()
     persistSession()
   }
@@ -566,11 +610,131 @@ let visibleStep = -1
 const queue: Array<{ when: number; step: number }> = []
 const sources = new Set<AudioBufferSourceNode>()
 
+function updateSongLength() {
+  const bars = session.bars
+  const count = bars?.length || 1
+  const selected = Math.min(Number(editBar.value), count - 1)
+  const lastPopulated = bars?.findLastIndex(notes => notes.length > 0) ?? -1
+  songLength.value = String(count)
+  for (const option of songLength.options) option.disabled = Number(option.value) <= lastPopulated
+  if (editBar.options.length !== count) {
+    editBar.innerHTML = Array.from({ length: count }, (_, index) => `<option value="${index}">${index + 1}</option>`).join('')
+  }
+  editBar.value = String(selected)
+}
+
+function paintRoll() {
+  const bar = session.bars?.[Number(editBar.value)] ?? []
+  const notes = bar.filter(note => note.instrument === instrumentInput.value)
+  for (const cell of pianoRoll.querySelectorAll<HTMLButtonElement>('[data-pitch]')) {
+    const pitch = Number(cell.dataset.pitch)
+    const beat = Number(cell.dataset.beat)
+    const note = notes.find(note => note.pitch === pitch && note.step === beat)
+    const held = notes.some(note => note.pitch === pitch && note.step < beat && note.step + note.length > beat)
+    cell.textContent = note && note.length > 1 ? String(note.length) : ''
+    cell.setAttribute('aria-pressed', String(!!note))
+    cell.classList.toggle('held', held)
+  }
+  paintRollPlayhead()
+}
+
+function paintRollPlayhead() {
+  const bar = Math.floor(visibleStep / 16)
+  const step = bar === Number(editBar.value) ? visibleStep % 16 : -1
+  pianoRoll.querySelectorAll('.current').forEach(cell => cell.classList.remove('current'))
+  if (step >= 0) {
+    pianoRoll.querySelectorAll(`[data-beat="${step}"], [data-roll-column="${step}"]`)
+      .forEach(cell => cell.classList.add('current'))
+  }
+  const playingBar = get('playing-bar')
+  playingBar.hidden = visibleStep < 0
+  const label = `Playing bar ${bar + 1}`
+  if (visibleStep >= 0 && playingBar.textContent !== label) playingBar.textContent = label
+}
+
+function renderRoll() {
+  const octave = Number(octaveInput.value)
+  const root = (octave + 1) * 12
+  pianoRoll.innerHTML = `<div class="grid-corner">Note</div>${Array.from({ length: 16 }, (_, index) =>
+    `<div class="step-number ${index % 4 === 0 ? 'beat' : ''}" data-roll-column="${index}">${index + 1}</div>`).join('')}
+    ${pitches.map((_, index) => {
+      const offset = 11 - index
+      const name = pitches[offset] + octave
+      return `<div class="pitch-key ${name.includes('♯') ? 'accidental' : ''}">${name}</div>
+        ${Array.from({ length: 16 }, (_, beat) =>
+          `<button class="note-cell ${beat % 4 === 0 ? 'downbeat' : ''}" type="button"
+            data-pitch="${root + offset}" data-beat="${beat}" tabindex="${index === 0 && beat === 0 ? 0 : -1}"
+            aria-label="${name}, step ${beat + 1}"></button>`).join('')}`
+    }).join('')}`
+  paintRoll()
+}
+
+songLength.onchange = () => {
+  if (loading) return
+  const count = Number(songLength.value)
+  const bars = session.bars ??= [[]]
+  if (bars.slice(count).some(bar => bar.length)) return updateSongLength()
+  stopPlayback()
+  session.bars = Array.from({ length: count }, (_, index) => bars[index] ?? [])
+  updateSongLength()
+  paintRoll()
+  persistSession()
+}
+editBar.onchange = paintRoll
+instrumentInput.onchange = paintRoll
+octaveInput.onchange = renderRoll
+
+pianoRoll.onclick = event => {
+  const cell = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-pitch]')
+  if (!cell || loading) return
+  const instrument = instrumentInput.value as Instrument
+  const bar = (session.bars ??= [[]])[Number(editBar.value)]
+  const pitch = Number(cell.dataset.pitch)
+  const step = Number(cell.dataset.beat)
+  const existing = bar.findIndex(note => note.instrument === instrument && note.pitch === pitch && note.step === step)
+  if (existing >= 0) {
+    bar.splice(existing, 1)
+  } else {
+    const length = Math.min(Number(noteLength.value), 16 - step)
+    bar.push({ instrument, pitch, step, length })
+    if (visibleStep < 0) {
+      void audioContext().then(audio => {
+        playClip(audio, instrumentClip(instrument, pitch, length * stepLength(session.bpm)), audio.currentTime, .24)
+      }).catch(() => status('Could not preview the note'))
+    }
+  }
+  updateSongLength()
+  paintRoll()
+  persistSession()
+}
+
+pianoRoll.addEventListener('focusin', event => {
+  const cell = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-pitch]')
+  if (!cell) return
+  pianoRoll.querySelector<HTMLButtonElement>('[tabindex="0"]')!.tabIndex = -1
+  cell.tabIndex = 0
+})
+
+pianoRoll.onkeydown = event => {
+  const cell = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-pitch]')
+  if (!cell) return
+  const direction = [
+    ['ArrowLeft', 0, -1], ['ArrowRight', 0, 1], ['ArrowUp', 1, 0], ['ArrowDown', -1, 0],
+  ] as const
+  const move = direction.find(([key]) => key === event.key)
+  if (!move) return
+  event.preventDefault()
+  pianoRoll.querySelector<HTMLButtonElement>(
+    `[data-pitch="${Number(cell.dataset.pitch) + move[1]}"][data-beat="${Number(cell.dataset.beat) + move[2]}"]`,
+  )?.focus()
+}
+
 function highlight(step: number) {
   if (step === visibleStep) return
   visibleStep = step
-  columns.forEach((column, index) => column.classList.toggle('current', index === step))
-  stepButtons.forEach((button, index) => button.classList.toggle('current', index % 16 === step))
+  columns.forEach((column, index) => column.classList.toggle('current', index === step % 16))
+  stepButtons.forEach((button, index) => button.classList.toggle('current', index % 16 === step % 16))
+  paintRollPlayhead()
 }
 
 function schedule(audio: AudioContext) {
@@ -581,7 +745,7 @@ function schedule(audio: AudioContext) {
       source.addEventListener('ended', () => sources.delete(source))
     }
     queue.push({ when: nextTime, step: nextStep })
-    nextStep = (nextStep + 1) % 16
+    nextStep = (nextStep + 1) % songSteps(session)
     nextTime += stepLength(session.bpm)
   }
   while (queue.length > 1 && queue[1].when < audio.currentTime - .25) queue.shift()
@@ -596,20 +760,27 @@ function stopPlayback() {
   sources.clear()
   queue.length = 0
   highlight(-1)
-  get('play').textContent = '▶ Play'
-  get('play').setAttribute('aria-pressed', 'false')
+  setPlaying(false)
 }
 
-get('play').onclick = async () => {
+function setPlaying(playing: boolean) {
+  for (const id of ['play', 'roll-play']) {
+    const button = get(id)
+    button.textContent = playing ? '■ Stop' : '▶ Play'
+    button.setAttribute('aria-pressed', String(playing))
+  }
+}
+
+async function togglePlayback() {
   if (loading) return
   const button = get('play')
   if (button.getAttribute('aria-pressed') === 'true') return stopPlayback()
   const current = ++generation
-  button.textContent = '■ Stop'
-  button.setAttribute('aria-pressed', 'true')
+  setPlaying(true)
   try {
     const audio = await audioContext()
     if (current !== generation) return
+    applyMix(audio, session)
     nextStep = 0
     nextTime = audio.currentTime + .04
     schedule(audio)
@@ -625,6 +796,54 @@ get('play').onclick = async () => {
     status('Could not start playback')
   }
 }
+get('play').onclick = togglePlayback
+get('roll-play').onclick = togglePlayback
+
+function readMix(): Mix {
+  const mix = { ...session.mix }
+  drumChannels.forEach((channel, index) => {
+    const settings = mix[channel]
+    mix[channel] = { level: settings?.level ?? 1, pan: settings?.pan ?? 0, muted: session.tracks[index].muted }
+  })
+  return mix
+}
+
+const refreshMixer = mountMixer(get('mixer'), readMix, mix => {
+  if (loading) return
+  session.mix = mix
+  drumChannels.forEach((channel, index) => {
+    session.tracks[index].muted = mix[channel]?.muted ?? false
+  })
+  if (context) applyMix(context, session)
+  updateGrid()
+  persistSession()
+})
+
+const starterDialog = get<HTMLDialogElement>('starter-dialog')
+const starterSelect = get<HTMLSelectElement>('starter-select')
+presets.forEach((preset, index) => starterSelect.add(new Option(preset.name, String(index))))
+get('starter-open').onclick = () => {
+  if (loading) return
+  starterDialog.returnValue = ''
+  starterDialog.showModal()
+}
+starterDialog.addEventListener('close', () => {
+  if (starterDialog.returnValue !== 'load') return
+  const preset = presets[Number(starterSelect.value)]
+  if (!preset) return
+  stopPlayback()
+  session.bpm = preset.bpm
+  session.tracks.forEach((track, index) => {
+    track.steps = Array.from({ length: 16 }, (_, step) => preset.drums[index].includes(step))
+  })
+  session.bars = preset.bars.map(bar => bar.map(note => ({ ...note })))
+  editBar.value = '0'
+  bpmInput.value = String(session.bpm)
+  updateGrid()
+  updateSongLength()
+  paintRoll()
+  persistSession()
+})
 
 bpmInput.onchange = () => {
   if (loading) return
@@ -662,11 +881,15 @@ get('export').onclick = async () => {
 
 updateGrid()
 updateEditor()
+renderRoll()
 load().then(saved => {
   if (saved) session = saved
   if (session.recording) calculatePeaks(session.recording)
   bpmInput.value = String(session.bpm)
   updateGrid()
   updateEditor()
+  updateSongLength()
+  paintRoll()
+  refreshMixer()
   status(saved ? 'Session restored' : 'Ready')
 }).catch(() => status('Local storage unavailable')).finally(() => { loading = false })

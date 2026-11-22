@@ -1,3 +1,5 @@
+import type { Mix } from './mixer.ts'
+
 export interface Clip {
   rate: number
   channels: Float32Array[]
@@ -14,6 +16,15 @@ export interface Track {
   sample: Clip | null
 }
 
+export type Instrument = 'piano' | 'guitar' | 'bass'
+
+export interface Note {
+  instrument: Instrument
+  pitch: number
+  step: number
+  length: number
+}
+
 export interface Session {
   bpm: number
   tracks: Track[]
@@ -21,6 +32,8 @@ export interface Session {
   name: string
   slices: Slice[]
   selected: number
+  bars?: Note[][]
+  mix?: Mix
 }
 
 const database = new Promise<IDBDatabase>((resolve, reject) => {

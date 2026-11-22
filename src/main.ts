@@ -52,7 +52,7 @@ studio.innerHTML = `
       <div class="controls">
         <label class="number-field tempo"><input id="bpm" aria-label="Tempo in BPM" type="number" min="30" max="300" step="1" value="120"><span>BPM</span></label>
         <button id="clear" type="button">Clear Steps</button>
-        <button id="play" class="play" type="button">▶ Play</button>
+        <button id="play" class="play" type="button" aria-pressed="false">▶ Play</button>
       </div>
     </div>
     <div class="grid-scroll"><div class="grid" id="grid"></div></div>
@@ -63,7 +63,7 @@ studio.innerHTML = `
       <h2 id="assign-title">Assign Slice</h2>
       <label>Track <select id="assign-track">${names.map((name, index) => `<option value="${index}">${name}</option>`).join('')}</select></label>
       <label>Destination <select id="assign-step"><option value="-1">Track sound</option>${Array.from({length:16}, (_, index) => `<option value="${index}">Step ${index + 1}</option>`).join('')}</select></label>
-      <div class="controls"><button value="cancel">Cancel</button><button class="primary" value="assign">Assign</button></div>
+      <div class="controls"><button value="cancel">Cancel</button><button id="destination-confirm" class="primary" value="assign">Assign</button></div>
     </form>
   </dialog>
   <div id="drag-ghost" class="drag-ghost" hidden></div>
@@ -89,7 +89,7 @@ ${names.map((name, track) => `
     <div class="track-name" data-track="${track}" data-step="-1"><span class="track-dot"></span><div>${name}<small data-sound="${track}"></small></div></div>
     <button type="button" class="mute" aria-label="Mute ${name}" data-mute="${track}">M</button>
   </div>
-  ${Array.from({length:16}, (_, step) => `<button type="button" class="step ${step % 4 === 0 ? 'beat' : ''}" style="--track-color:${colors[track]}" aria-label="${name}, step ${step + 1}" data-track="${track}" data-step="${step}"></button>`).join('')}
+  ${Array.from({length:16}, (_, step) => `<button type="button" class="step ${step % 4 === 0 ? 'beat' : ''}" style="--track-color:${colors[track]}" aria-label="${name}, step ${step + 1}" aria-keyshortcuts="Shift+Enter" title="Shift+Enter to move an active step" data-track="${track}" data-step="${step}"></button>`).join('')}
 `).join('')}`
 
 const stepButtons = [...grid.querySelectorAll<HTMLButtonElement>('.step')]
@@ -103,12 +103,15 @@ let inputBusy = false
 let recording: MediaRecorder | undefined
 let recordingTimer: ReturnType<typeof setTimeout> | undefined
 let wavePeaks: number[] = []
+let statusVersion = 0
 
 function status(message: string) {
+  statusVersion++
   get('status').textContent = message
 }
 
 function persistSession() {
+  const version = ++statusVersion
   // Snapshot mutable controls immediately. PCM arrays are immutable after creation.
   const snapshot = {
     ...session,
@@ -116,7 +119,7 @@ function persistSession() {
     tracks: session.tracks.map(track => ({ ...track, steps: [...track.steps] })),
   }
   persist = persist.then(() => save(snapshot)).then(() => {
-    status('Saved locally')
+    if (version === statusVersion && !recording) status('Saved locally')
   }, () => {
     status('Could not save this session')
   })
@@ -354,11 +357,55 @@ function assignSlice(index: number, track: number, step: number) {
   persistSession()
 }
 
-get('assign').onclick = () => dialog.showModal()
+type Hit = { track: number; step: number }
+let movingHit: Hit | undefined
+const destinationTrack = get<HTMLSelectElement>('assign-track')
+const destinationStep = get<HTMLSelectElement>('assign-step')
+
+function openDestination(hit?: Hit) {
+  movingHit = hit
+  get('assign-title').textContent = hit ? 'Move Hit' : 'Assign Slice'
+  get('destination-confirm').textContent = hit ? 'Move' : 'Assign'
+  destinationStep.options[0].textContent = hit ? 'Keep step timing' : 'Track sound'
+  destinationTrack.selectedIndex = hit?.track ?? 0
+  destinationStep.selectedIndex = 0
+  dialog.returnValue = ''
+  dialog.showModal()
+}
+
+function moveHit(from: Hit, to: Hit) {
+  const source = session.tracks[from.track].steps
+  const target = session.tracks[to.track].steps
+  const step = to.step < 0 ? from.step : to.step
+  if (source === target && from.step === step) return
+  if (!source[from.step]) return
+  if (target[step]) {
+    status('That step already has a hit')
+    return
+  }
+  source[from.step] = false
+  target[step] = true
+  updateGrid()
+  persistSession()
+}
+
+get('assign').onclick = () => openDestination()
 dialog.addEventListener('close', () => {
   if (dialog.returnValue !== 'assign') return
-  assignSlice(session.selected, Number(get<HTMLSelectElement>('assign-track').value), Number(get<HTMLSelectElement>('assign-step').value))
-  dialog.returnValue = ''
+  const to = { track: Number(destinationTrack.value), step: Number(destinationStep.value) }
+  if (movingHit) {
+    moveHit(movingHit, to)
+  } else {
+    assignSlice(session.selected, to.track, to.step)
+  }
+})
+
+grid.addEventListener('keydown', event => {
+  if (loading || event.key !== 'Enter' || !event.shiftKey) return
+  const button = (event.target as HTMLElement).closest<HTMLElement>('.step.active')
+  if (!button) return
+  event.preventDefault()
+  openDestination({ track: Number(button.dataset.track), step: Number(button.dataset.step) })
 })
 
 for (const [edge, input] of [['start', startInput], ['end', endInput]] as const) {
@@ -423,7 +470,7 @@ studio.addEventListener('click', event => {
   }
 })
 
-type DragSource = { slice: number } | { track: number; step: number }
+type DragSource = { slice: number } | Hit
 let suppressClick = false
 studio.addEventListener('click', event => {
   if (!suppressClick || event.detail === 0) return
@@ -502,10 +549,7 @@ studio.addEventListener('pointerdown', event => {
     if ('slice' in item) {
       assignSlice(item.slice, track, step)
     } else {
-      session.tracks[item.track].steps[item.step] = false
-      session.tracks[track].steps[step < 0 ? item.step : step] = true
-      updateGrid()
-      persistSession()
+      moveHit(item, { track, step })
     }
   }
   source.addEventListener('pointermove', move)
@@ -558,8 +602,11 @@ function stopPlayback() {
 
 get('play').onclick = async () => {
   if (loading) return
-  if (timer !== undefined) return stopPlayback()
+  const button = get('play')
+  if (button.getAttribute('aria-pressed') === 'true') return stopPlayback()
   const current = ++generation
+  button.textContent = '■ Stop'
+  button.setAttribute('aria-pressed', 'true')
   try {
     const audio = await audioContext()
     if (current !== generation) return
@@ -572,9 +619,8 @@ get('play').onclick = async () => {
       frame = requestAnimationFrame(paint)
     }
     frame = requestAnimationFrame(paint)
-    get('play').textContent = '■ Stop'
-    get('play').setAttribute('aria-pressed', 'true')
   } catch {
+    if (current !== generation) return
     stopPlayback()
     status('Could not start playback')
   }
